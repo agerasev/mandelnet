@@ -41,7 +41,8 @@ __kernel void colorize(
     __write_only image2d_t color_img,
     int scale,
     __read_only image1d_t color_map,
-    float map_period
+    float map_period,
+    float4 inner_color
 ) {
     int2 p = (int2)(get_global_id(0), get_global_id(1));
     int2 s = (int2)(get_global_size(0), get_global_size(1));
@@ -56,7 +57,7 @@ __kernel void colorize(
             if (depth >= 0.0f) {
                 color += (float4)read_imagef(color_map, sampler, depth/map_period);
             } else {
-                color += (float4)(0,0,0,1);
+                color += inner_color;
             }
         }
     }

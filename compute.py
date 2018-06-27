@@ -3,74 +3,93 @@ import pyopencl as cl
 
 from clutil import *
 
-
-class Scene:
-    def __init__(self, ctx, size, scale=2):
+class Canvas:
+    def __init__(self, ctx, queue, size):
         self.context = ctx
+        self.queue = queue
+        
         self.size = size
         self.shape = (size[1], size[0])
         
-        self.scale = scale
-        self.upsize = [s*self.scale for s in size]
-        self.upshape = (self.upsize[1], self.upsize[0])
-        
-        self.queue = cl.CommandQueue(ctx)
-        with open("compute.cl", "r") as f:
-            self.program = cl.Program(self.context, f.read()).build()
-        
-        self.depth_img = Image2D(
-            self.context,
-            np.zeros(self.upshape, dtype=np.float32),
-            fmt=cl.ImageFormat(cl.channel_order.R, cl.channel_type.FLOAT)
-        )
-        
-        self.color_img = Image2D(
+        self.buffer = Image2D(
             self.context,
             np.zeros((*self.shape, 4), dtype=np.float32), 
             rw=cl.mem_flags.WRITE_ONLY, 
             fmt=cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.FLOAT),
         )
         
-    def load_depth(self):
-        self.depth_img.load(self.queue)
-        return self.depth_img.host.copy()
-    
-    def load_color(self):
-        self.color_img.load(self.queue)
-        return self.color_img.host.copy()
+    def load(self):
+        self.buffer.load(self.queue)
+        return self.buffer.host.copy()
+
+class Scene:
+    def __init__(self, ctx, size, scale):
+        self.context = ctx
+        self.queue = cl.CommandQueue(ctx)
+        with open("compute.cl", "r") as f:
+            self.program = cl.Program(self.context, f.read()).build()
+        
+        self.size = size
+        self.shape = (size[1], size[0])
+        
+        self.buffer = Image2D(
+            self.context,
+            np.zeros(self.shape, dtype=np.float32),
+            fmt=cl.ImageFormat(cl.channel_order.R, cl.channel_type.FLOAT)
+        )
+        
+        try:
+            iter(scale)
+        except TypeError:
+            scale = (scale,)
+        self.scale = scale
+        
+        self.images = []
+        for s in scale:
+            self.images.append(Canvas(
+                self.context, 
+                self.queue, 
+                (size[0]//s, size[1]//s),
+            ))
+        
+    def load(self):
+        self.buffer.load(self.queue)
+        return self.buffer.host.copy()
         
     def compute(self, pos, zoom, max_depth=0x100, julia=None):
         jpos = (0,0) if julia is None else julia
         self.program.compute(
             self.queue,
-            self.upsize,
+            self.size,
             None,
-            self.depth_img.buf,
+            self.buffer.buf,
             np.array(pos, dtype=np.float32),
             np.array(zoom, dtype=np.float32),
             np.array([max_depth], dtype=np.int32),
             np.array([julia is not None], dtype=np.int32),
             np.array(jpos, dtype=np.float32),
         )
-        return self.load_depth()
+        return self.load()
     
-    def colorize(self, colors, period=1.0):
+    def colorize(self, colors, period=1.0, inner_color=(0,0,0,1), img=0):
         color_map = Image1D(
             self.context,
             np.array(colors, dtype=np.float32),
             fmt=cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.FLOAT)
         )
+        image = self.images[img]
         self.program.colorize(
             self.queue,
-            self.size,
+            image.size,
             None,
-            self.depth_img.buf,
-            self.color_img.buf,
-            np.array([self.scale], dtype=np.int32),
+            self.buffer.buf,
+            image.buffer.buf,
+            np.array([self.scale[img]], dtype=np.int32),
             color_map.buf,
-            np.array([period], dtype=np.float32)
+            np.array([period], dtype=np.float32),
+            np.array(inner_color, dtype=np.float32)
         )
-        return self.load_color()
+        return image.load()
 
 def cmul(a, b):
     return np.stack((a[0]*b[0] - a[1]*b[1], a[0]*b[1] + a[1]*b[0]))
